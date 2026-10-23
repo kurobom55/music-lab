@@ -1,0 +1,918 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>フレーズメーカー</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
+<style>
+  :root {
+    --bg: #f4f5f7; --panel: #fff; --text: #222; --sub: #777; --line: #ccc;
+    --accent: #2e9e5b; --rec: #d64545; --note: #e76f51; --sel: #264653; --trace: #9b5de5;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: system-ui, sans-serif; background: var(--bg); color: var(--text); }
+  .wrap { max-width: 960px; margin: 0 auto; padding: 16px; }
+  h1 { font-size: 22px; margin: 8px 0 4px; }
+  .lead { color: var(--sub); font-size: 14px; margin: 0 0 16px; }
+  .panel { background: var(--panel); border-radius: 12px; padding: 16px; margin-bottom: 14px; box-shadow: 0 1px 4px rgba(0,0,0,.06); }
+  .panel h2 { font-size: 15px; margin: 0 0 12px; }
+  .row { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; }
+  label { font-size: 14px; color: var(--sub); }
+  select, input[type=text] { font-size: 15px; padding: 5px 6px; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
+  input[type=range] { vertical-align: middle; }
+  .btn { padding: 8px 12px; border: 1px solid var(--line); border-radius: 8px; background: #fff; font-size: 15px; cursor: pointer; }
+  .btn:disabled { opacity: .4; cursor: default; }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .btn.warn { color: #c33; border-color: #e5b3b3; }
+  .tabs { display: flex; gap: 6px; margin-bottom: 12px; }
+  .tab { flex: 1; padding: 10px; border: 1px solid var(--line); border-radius: 10px; background: #fafafa; font-size: 15px; cursor: pointer; }
+  .tab.on { background: var(--sel); color: #fff; border-color: var(--sel); }
+  .status { font-size: 13px; color: var(--sub); margin-top: 8px; line-height: 1.5; }
+
+  /* 歌って入力 */
+  .recbox { display: grid; grid-template-columns: auto 1fr; gap: 16px; align-items: center; }
+  .recbtn { width: 96px; height: 96px; border-radius: 50%; border: none; background: var(--rec); color: #fff;
+            font-size: 16px; font-weight: 700; cursor: pointer; box-shadow: 0 3px 8px rgba(214,69,69,.35); }
+  .recbtn.on { background: #555; }
+  .live { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+  .livenote { font-size: 34px; font-weight: 800; letter-spacing: .02em; min-height: 42px; }
+  .livenote small { font-size: 16px; color: var(--sub); font-weight: 400; margin-left: 8px; }
+  .meter { height: 8px; background: #eee; border-radius: 4px; overflow: hidden; }
+  .meter i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .05s; }
+  .beats { display: flex; gap: 8px; align-items: center; }
+  .beats span { width: 16px; height: 16px; border-radius: 50%; background: #ddd; }
+  .beats span.on { background: var(--note); }
+  .beats span.accent.on { background: var(--rec); }
+  .beats b { font-size: 15px; margin-left: 6px; }
+
+  /* 弾いて入力 */
+  .piano { position: relative; height: 120px; user-select: none; touch-action: none; margin-top: 10px; }
+  .piano .w, .piano .b { position: absolute; border: 1px solid #999; border-radius: 0 0 5px 5px; cursor: pointer; }
+  .piano .w { background: #fff; height: 120px; display: flex; align-items: flex-end; justify-content: center;
+              font-size: 11px; color: #888; padding-bottom: 4px; }
+  .piano .b { background: #222; height: 74px; z-index: 2; }
+  .piano .down { background: var(--note) !important; }
+
+  /* ピアノロール */
+  .rollwrap { overflow-x: auto; border: 1px solid #e3e3e3; border-radius: 8px; }
+  #roll { display: block; touch-action: none; cursor: crosshair; }
+  .tools { margin-top: 10px; }
+  kbd { font-size: 12px; border: 1px solid #ccc; border-bottom-width: 2px; border-radius: 4px; padding: 0 4px; background: #fafafa; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>フレーズメーカー</h1>
+  <p class="lead">STEP 1：自分の核となるフレーズを作る。短くても、未完成でも大丈夫です。</p>
+
+  <div class="panel">
+    <h2>設定</h2>
+    <div class="row">
+      <label>テンポ <input type="range" id="bpm" min="50" max="160" value="90"> <b id="bpmVal">90</b></label>
+      <label>長さ
+        <select id="bars"><option value="1">1小節</option><option value="2" selected>2小節</option><option value="4">4小節</option></select>
+      </label>
+      <label>細かさ
+        <select id="grid"><option value="2" selected>8分音符</option><option value="1">16分音符</option></select>
+      </label>
+      <label>調
+        <select id="key"></select>
+      </label>
+      <label><input type="checkbox" id="snap" checked> 調の音に寄せる</label>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="tabs">
+      <button class="tab on" data-mode="sing">🎤 歌って入力</button>
+      <button class="tab" data-mode="play">🎹 弾いて入力</button>
+    </div>
+
+    <div id="singPane">
+      <div class="recbox">
+        <button class="recbtn" id="recBtn">● 録音</button>
+        <div class="live">
+          <div class="livenote" id="liveNote">—</div>
+          <div class="meter"><i id="meter"></i></div>
+          <div class="beats" id="beats"><span class="accent"></span><span></span><span></span><span></span><b id="beatText"></b></div>
+        </div>
+      </div>
+      <div class="row" style="margin-top:12px">
+        <label><input type="checkbox" id="click" checked> メトロノーム音</label>
+        <button class="btn" id="playRaw" disabled>🔊 録音した声を聞く</button>
+        <button class="btn" id="reanalyze" disabled>↻ 録音から解析し直す</button>
+      </div>
+      <div class="status" id="singStatus">
+        録音を押すと、1小節（4拍）のカウントのあとに録音が始まります。<br>
+        コツ：「ラ・ラ・ラ」「タ・タ・タ」と区切って歌うと精度が上がります。イヤホンを使うとメトロノームの音を拾いません。
+      </div>
+    </div>
+
+    <div id="playPane" hidden>
+      <div class="row">
+        <label>音の長さ
+          <select id="stepLen">
+            <option value="1">16分</option><option value="2" selected>8分</option><option value="3">付点8分</option>
+            <option value="4">4分</option><option value="6">付点4分</option><option value="8">2分</option>
+          </select>
+        </label>
+        <button class="btn" id="restBtn">休符</button>
+        <button class="btn" id="backBtn">⌫ 1つ戻す</button>
+        <button class="btn" id="cursorHome">カーソルを先頭へ</button>
+        <button class="btn" id="octDown">オクターブ −</button>
+        <button class="btn" id="octUp">オクターブ ＋</button>
+      </div>
+      <div class="piano" id="piano"></div>
+      <div class="status">
+        鍵盤をタップするか、PCのキーボードで弾くと、カーソルの位置に音が入って次へ進みます。<br>
+        <kbd>A</kbd>=ド <kbd>W</kbd>=ド# <kbd>S</kbd>=レ <kbd>E</kbd>=レ# <kbd>D</kbd>=ミ <kbd>F</kbd>=ファ <kbd>T</kbd>=ファ# <kbd>G</kbd>=ソ
+        <kbd>Y</kbd>=ソ# <kbd>H</kbd>=ラ <kbd>U</kbd>=ラ# <kbd>J</kbd>=シ <kbd>K</kbd>=上のド　<kbd>-</kbd>=休符　<kbd>Backspace</kbd>=戻す
+      </div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>フレーズ（タップで音を追加・ドラッグで移動・右端をドラッグで長さ変更）</h2>
+    <div class="rollwrap" id="rollWrap"><canvas id="roll"></canvas></div>
+    <div class="row tools">
+      <button class="btn primary" id="playBtn">▶ 再生</button>
+      <label><input type="checkbox" id="loop"> ループ</label>
+      <label><input type="checkbox" id="playClick" checked> クリック音</label>
+      <button class="btn" id="undoBtn">↩ 元に戻す</button>
+      <button class="btn warn" id="delBtn" disabled>選んだ音を削除</button>
+      <button class="btn" id="shiftDown">全体を半音↓</button>
+      <button class="btn" id="shiftUp">全体を半音↑</button>
+      <button class="btn" id="viewDown">表示 ▼</button>
+      <button class="btn" id="viewUp">表示 ▲</button>
+      <label><input type="checkbox" id="showTrace" checked> 声の軌跡を表示</label>
+      <button class="btn warn" id="clearBtn">全部消す</button>
+    </div>
+    <div class="status" id="rollStatus"></div>
+  </div>
+
+  <div class="panel">
+    <h2>保存（STEP 2 でこのフレーズを使います）</h2>
+    <div class="row">
+      <input type="text" id="saveName" placeholder="フレーズの名前" style="flex:1;min-width:140px">
+      <button class="btn primary" id="saveBtn">保存</button>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <select id="savedSel" style="flex:1;min-width:140px"></select>
+      <button class="btn" id="loadBtn">読み込み</button>
+      <button class="btn warn" id="delSaved">削除</button>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <button class="btn" id="exportBtn">ファイルに書き出す</button>
+      <button class="btn" id="importBtn">ファイルから読み込む</button>
+      <input type="file" id="importFile" accept=".json,application/json" hidden>
+    </div>
+    <div class="status" id="saveStatus">編集中のフレーズは自動で保存され、次に開いたときに復元されます。</div>
+  </div>
+</div>
+
+<script>
+// ===================== 基本 =====================
+const $ = id => document.getElementById(id);
+const NOTE = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+const DOREMI = ['ド','ド#','レ','レ#','ミ','ファ','ファ#','ソ','ソ#','ラ','ラ#','シ'];
+const MAJOR = [0,2,4,5,7,9,11];
+const BLACK = [1,3,6,8,10];
+const pc = m => ((m % 12) + 12) % 12;
+const noteName = m => NOTE[pc(m)] + (Math.floor(m / 12) - 1);
+const median = a => { if (!a.length) return null; const s = [...a].sort((x, y) => x - y); const h = s.length >> 1; return s.length % 2 ? s[h] : (s[h - 1] + s[h]) / 2; };
+const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
+
+// フレーズ：音の位置と長さは16分音符単位（s=開始, d=長さ, m=MIDI番号）
+let phrase = { notes: [], key: null };
+let rec = null;      // 最後の録音 { bpm, bars, frames:[{t, m, rms}] }
+let sel = null;      // 選択中の音
+let mode = 'sing';
+let cursor = 0;      // 弾いて入力のカーソル（16分単位）
+let baseOct = 60;    // 弾いて入力の基準のド
+let view = { lo: 55, hi: 79 };
+
+const bpm = () => Number($('bpm').value);
+const bars = () => Number($('bars').value);
+const step = () => Number($('grid').value);   // 1マスの長さ（16分単位）
+const total16 = () => bars() * 16;
+const keySel = () => $('key').value === 'auto' ? null : Number($('key').value);
+const curKey = () => keySel() ?? phrase.key;
+
+// 調の選択肢
+(() => {
+  const s = $('key');
+  s.innerHTML = '<option value="auto">自動で判定</option>' +
+    NOTE.map((n, k) => `<option value="${k}">${n}（${NOTE[(k + 9) % 12]}m）</option>`).join('');
+})();
+
+// ===================== 音源 =====================
+const out = new Tone.Gain(0.9).toDestination();
+let pianoReady = false;
+const piano = new Tone.Sampler({
+  urls: { C3:'C3.mp3', 'D#3':'Ds3.mp3', 'F#3':'Fs3.mp3', A3:'A3.mp3', C4:'C4.mp3', 'D#4':'Ds4.mp3',
+          'F#4':'Fs4.mp3', A4:'A4.mp3', C5:'C5.mp3', 'D#5':'Ds5.mp3', 'F#5':'Fs5.mp3', A5:'A5.mp3' },
+  baseUrl: 'https://tonejs.github.io/audio/salamander/',
+  release: 1,
+  onload: () => { pianoReady = true; },
+}).connect(out);
+const synth = new Tone.PolySynth(Tone.Synth, { oscillator: { type: 'triangle' } }).connect(out);
+synth.volume.value = -6;
+const inst = () => pianoReady ? piano : synth;
+// メトロノームはノイズ音（音程がないので、声の高さの検出を邪魔しない）
+const clickFilter = new Tone.Filter(5000, 'highpass').connect(out);
+const makeClick = () => {
+  const c = new Tone.NoiseSynth({ noise: { type: 'white' }, envelope: { attack: 0.001, decay: 0.03, sustain: 0 } }).connect(clickFilter);
+  c.volume.value = -14;
+  return c;
+};
+const clickSyn = makeClick();
+let recClick = null;   // 録音用のクリック（途中で止めたら捨てて、残りのクリックも止める）
+
+function blip(m, dur = 0.3) {
+  Tone.start();
+  inst().triggerAttackRelease(noteName(m), dur, undefined, 0.7);
+}
+
+// ===================== 声の高さの検出（YIN法） =====================
+const F_MIN = 70, F_MAX = 1000;
+function detectPitch(buf, sr) {
+  const half = buf.length >> 1;
+  const minTau = Math.floor(sr / F_MAX), maxTau = Math.min(half - 1, Math.floor(sr / F_MIN));
+  const d = new Float32Array(maxTau + 2);
+  for (let tau = 1; tau <= maxTau + 1; tau++) {
+    let s = 0;
+    for (let i = 0; i < half; i++) { const x = buf[i] - buf[i + tau]; s += x * x; }
+    d[tau] = s;
+  }
+  // 累積平均で正規化した差分関数
+  d[0] = 1;
+  let run = 0;
+  for (let tau = 1; tau <= maxTau + 1; tau++) { run += d[tau]; d[tau] = run ? d[tau] * tau / run : 1; }
+  let tau = -1;
+  for (let t = minTau; t <= maxTau; t++) {
+    if (d[t] < 0.15) { while (t + 1 <= maxTau && d[t + 1] < d[t]) t++; tau = t; break; }
+  }
+  if (tau < 1) return null;
+  // 放物線補間で周期を細かく求める
+  const a = d[tau - 1], b = d[tau], c = d[tau + 1];
+  const den = 2 * (2 * b - a - c);
+  const better = den ? tau + (c - a) / den : tau;
+  return { freq: sr / better, conf: 1 - b };
+}
+const freqToMidi = f => 69 + 12 * Math.log2(f / 440);
+
+// ===================== 録音 =====================
+let stream = null, analyser = null, recTimer = null, mediaRec = null, rawUrl = null, recording = false;
+const LATENCY = 0.03;   // マイク入力の遅れの見込み（秒）
+
+async function startRec() {
+  await Tone.start();
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    singMsg('この開き方ではマイクが使えません。https のページ（GitHub Pages など）で開いてください。');
+    return;
+  }
+  try {
+    stream = stream || await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
+    });
+  } catch (e) {
+    singMsg('マイクの使用が許可されませんでした。ブラウザのアドレスバー付近の設定から、マイクを許可してください。');
+    return;
+  }
+  stopPlay();
+  const ctx = Tone.getContext().rawContext;
+  if (!analyser) {
+    analyser = ctx.createAnalyser();
+    analyser.fftSize = 2048;
+    ctx.createMediaStreamSource(stream).connect(analyser);
+  }
+  const buf = new Float32Array(analyser.fftSize);
+  const beat = 60 / bpm();
+  const nBars = bars();
+  const t0 = ctx.currentTime + 0.2;
+  const recStart = t0 + 4 * beat;               // 1小節カウントしてから
+  const recEnd = recStart + nBars * 4 * beat;
+  const frames = [], noise = [];
+
+  // メトロノーム（音と表示）
+  recClick = makeClick();
+  for (let i = 0; i < 4 + nBars * 4; i++) {
+    const t = t0 + i * beat;
+    if ($('click').checked) recClick.triggerAttackRelease('32n', t, i % 4 === 0 ? 1 : 0.5);
+    const counting = i < 4;
+    const barNo = Math.floor((i - 4) / 4) + 1;
+    Tone.Draw.schedule(() => showBeat(i % 4, counting ? `カウント ${i + 1}` : `歌って！ ${barNo}小節目`), t);
+  }
+
+  // 声の録音（あとで聞き直せるように）
+  if (rawUrl) { URL.revokeObjectURL(rawUrl); rawUrl = null; }
+  try {
+    const chunks = [];
+    mediaRec = new MediaRecorder(stream);
+    mediaRec.ondataavailable = e => chunks.push(e.data);
+    mediaRec.onstop = () => { rawUrl = URL.createObjectURL(new Blob(chunks, { type: mediaRec.mimeType })); $('playRaw').disabled = false; };
+    mediaRec.start();
+  } catch { mediaRec = null; }
+
+  recording = true;
+  $('recBtn').textContent = '■ 停止'; $('recBtn').classList.add('on');
+  singMsg('録音中…');
+  rec = { bpm: bpm(), bars: nBars, frames };
+  fitView([]);
+
+  recTimer = setInterval(() => {
+    analyser.getFloatTimeDomainData(buf);
+    let sum = 0;
+    for (let i = 0; i < buf.length; i++) sum += buf[i] * buf[i];
+    const rms = Math.sqrt(sum / buf.length);
+    const tc = ctx.currentTime - buf.length / 2 / ctx.sampleRate - LATENCY;   // 分析した区間の中心の時刻
+    $('meter').style.width = Math.min(100, rms * 600) + '%';
+
+    if (tc < recStart) noise.push(rms);         // カウント中にまわりの雑音の大きさを測る
+    const gate = Math.max(0.006, (median(noise) || 0) * 3);
+    let m = null;
+    if (rms > gate) {
+      const r = detectPitch(buf, ctx.sampleRate);
+      if (r && r.conf > 0.8) m = freqToMidi(r.freq);
+    }
+    showLive(m);
+    if (tc >= recStart && tc < recEnd) { frames.push({ t: tc - recStart, m, rms }); draw(); }
+    if (tc >= recEnd) finishRec(true);
+  }, 12);
+}
+
+function finishRec(complete) {
+  clearInterval(recTimer);
+  recTimer = null;
+  recording = false;
+  if (mediaRec && mediaRec.state !== 'inactive') mediaRec.stop();
+  Tone.Draw.cancel(0);
+  if (recClick) { recClick.dispose(); recClick = null; }
+  showBeat(-1, '');
+  showLive(null);
+  $('meter').style.width = '0';
+  $('recBtn').textContent = '● 録音'; $('recBtn').classList.remove('on');
+  if (!complete || !rec || rec.frames.filter(f => f.m != null).length < 3) {
+    singMsg(complete ? '声がほとんど拾えませんでした。マイクに近づくか、少し大きめの声で歌ってみてください。' : '録音を中止しました。');
+    draw();
+    return;
+  }
+  $('reanalyze').disabled = false;
+  pushUndo();
+  analyze();
+  singMsg(`${phrase.notes.length}個の音を取り込みました。違う音は下の画面でドラッグして直せます。`);
+}
+
+function showBeat(i, text) {
+  [...$('beats').querySelectorAll('span')].forEach((s, k) => s.classList.toggle('on', k === i));
+  $('beatText').textContent = text;
+}
+function showLive(m) {
+  if (m == null) { $('liveNote').innerHTML = recording ? '…' : '—'; return; }
+  const r = Math.round(m), cents = Math.round((m - r) * 100);
+  $('liveNote').innerHTML = `${DOREMI[pc(r)]} <small>${noteName(r)}　${cents >= 0 ? '+' : ''}${cents}</small>`;
+}
+function singMsg(t) { $('singStatus').textContent = t; }
+
+// ===================== 録音 → 音符 =====================
+// 近くのフレームの中央値で、細かい揺れや一瞬の誤検出をならす
+function smooth(frames) {
+  return frames.map((f, i) => {
+    if (f.m == null) return null;
+    const w = [];
+    for (let k = i - 2; k <= i + 2; k++) if (frames[k] && frames[k].m != null) w.push(frames[k].m);
+    return median(w);
+  });
+}
+
+function analyze() {
+  if (!rec) return;
+  const st = step();
+  const cellDur = 60 / rec.bpm / 4 * st;          // 1マスの秒数
+  const nCells = rec.bars * 16 / st;
+  const fr = rec.frames;
+  const ms = smooth(fr);
+
+  // マスごとに、声が出ていたか・どの高さか・音の切れ目（音量の谷）があったかを調べる
+  const cells = [];
+  for (let c = 0; c < nCells; c++) {
+    const t0 = c * cellDur, t1 = t0 + cellDur;
+    const idx = [];
+    fr.forEach((f, i) => { if (f.t >= t0 && f.t < t1) idx.push(i); });
+    const voiced = idx.filter(i => ms[i] != null);
+    if (!idx.length || voiced.length / idx.length < 0.45) { cells.push(null); continue; }
+    const p = median(voiced.map(i => ms[i]));
+    const maxR = Math.max(...idx.map(i => fr[i].rms));
+    let dip = false;
+    fr.forEach(f => { if (Math.abs(f.t - t0) < cellDur * 0.3 && f.rms < maxR * 0.45) dip = true; });
+    cells.push({ p, dip });
+  }
+  // オクターブの取り違えを直す（前後と1オクターブ近く離れていたら寄せる）
+  cells.forEach((c, i) => {
+    if (!c) return;
+    const nb = [];
+    for (let k = i - 3; k <= i + 3; k++) if (k !== i && cells[k]) nb.push(cells[k].p);
+    const md = median(nb);
+    if (md != null && Math.abs(c.p - md) > 9) c.p += 12 * Math.round((md - c.p) / 12);
+  });
+  // 同じ高さで切れ目のないマスはつなげて1つの音にする
+  const notes = [];
+  let cur = null;
+  cells.forEach((c, i) => {
+    if (!c) { cur = null; return; }
+    if (cur && Math.abs(c.p - median(cur.ps)) < 0.7 && !c.dip) { cur.d += st; cur.ps.push(c.p); return; }
+    cur = { s: i * st, d: st, ps: [c.p] };
+    notes.push(cur);
+  });
+  notes.forEach(n => { n.raw = median(n.ps); n.m = Math.round(n.raw); });
+
+  phrase.key = detectKey(notes);
+  if ($('snap').checked) notes.forEach(n => { n.m = snapToKey(n.m, n.raw, curKey()); });
+  phrase.notes = notes.map(({ s, d, m }) => ({ s, d, m }));
+  sel = null;
+  fitView(phrase.notes);
+  updateAll();
+}
+
+// 音の長さを重みにして、一番よく当てはまる長調（＝平行短調）を選ぶ
+function detectKey(notes) {
+  if (!notes.length) return 0;
+  let best = 0, bestScore = -Infinity;
+  for (let k = 0; k < 12; k++) {
+    const sc = MAJOR.map(i => (k + i) % 12);
+    let s = 0;
+    notes.forEach(n => { s += (sc.includes(pc(Math.round(n.m))) ? 1 : -1.2) * n.d; });
+    const last = pc(Math.round(notes[notes.length - 1].m));
+    if (last === k || last === (k + 9) % 12) s += 2;   // 主音（またはラ）で終わる調を優先
+    if (s > bestScore) { bestScore = s; best = k; }
+  }
+  return best;
+}
+function snapToKey(m, raw, k) {
+  const sc = MAJOR.map(i => (k + i) % 12);
+  if (sc.includes(pc(m))) return m;
+  return raw > m ? m + 1 : m - 1;   // 音階の外の音は、実際に歌った高さに近い側へ
+}
+
+// ===================== ピアノロール =====================
+const cv = $('roll');
+const g = cv.getContext('2d');
+const GUTTER = 46, ROW = 16;
+let cellW = 40;
+
+function fitView(notes) {
+  const ms = notes.map(n => n.m);
+  if (rec && $('showTrace').checked) rec.frames.forEach(f => { if (f.m != null) ms.push(f.m); });
+  if (!ms.length) { view = { lo: 55, hi: 79 }; resize(); return; }
+  let lo = Math.floor(Math.min(...ms)) - 4, hi = Math.ceil(Math.max(...ms)) + 4;
+  while (hi - lo < 24) { lo--; hi++; }
+  view = { lo: clamp(lo, 24, 96), hi: clamp(hi, 36, 108) };
+  resize();
+}
+
+function resize() {
+  const cells = total16() / step();
+  const wrapW = $('rollWrap').clientWidth || 600;
+  cellW = Math.max(step() === 1 ? 14 : 22, (wrapW - GUTTER) / cells);
+  const w = GUTTER + cellW * cells;
+  const h = (view.hi - view.lo + 1) * ROW;
+  const dpr = window.devicePixelRatio || 1;
+  cv.width = w * dpr; cv.height = h * dpr;
+  cv.style.width = w + 'px'; cv.style.height = h + 'px';
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  draw();
+}
+
+const xOf16 = s16 => GUTTER + s16 / step() * cellW;
+const yOf = m => (view.hi - m) * ROW;
+
+let playhead = null;   // 再生位置（16分単位）
+function draw() {
+  const W = cv.width / (window.devicePixelRatio || 1), H = cv.height / (window.devicePixelRatio || 1);
+  const k = curKey();
+  const sc = k == null ? null : MAJOR.map(i => (k + i) % 12);
+  g.clearRect(0, 0, W, H);
+  // 行（黒鍵の行は灰色、調の音は薄い緑）
+  for (let m = view.lo; m <= view.hi; m++) {
+    const y = yOf(m);
+    g.fillStyle = BLACK.includes(pc(m)) ? '#f0f0f0' : '#fff';
+    if (sc && sc.includes(pc(m))) g.fillStyle = BLACK.includes(pc(m)) ? '#e5f2ea' : '#f3faf5';
+    g.fillRect(GUTTER, y, W - GUTTER, ROW);
+    g.strokeStyle = pc(m) === 0 ? '#bbb' : '#eee';
+    g.beginPath(); g.moveTo(GUTTER, y + ROW); g.lineTo(W, y + ROW); g.stroke();
+    // 左の音名
+    g.fillStyle = BLACK.includes(pc(m)) ? '#555' : '#fff';
+    g.fillRect(0, y, GUTTER - 2, ROW);
+    g.fillStyle = BLACK.includes(pc(m)) ? '#fff' : '#555';
+    g.font = (pc(m) === 0 ? 'bold ' : '') + '10px system-ui';
+    g.textBaseline = 'middle';
+    g.fillText(pc(m) === 0 ? `${DOREMI[0]} ${noteName(m)}` : NOTE[pc(m)], 4, y + ROW / 2);
+  }
+  // 縦線（小節・拍・マス）
+  for (let s = 0; s <= total16(); s += step()) {
+    const x = xOf16(s);
+    g.strokeStyle = s % 16 === 0 ? '#666' : s % 4 === 0 ? '#bbb' : '#e6e6e6';
+    g.lineWidth = s % 16 === 0 ? 2 : 1;
+    g.beginPath(); g.moveTo(x, 0); g.lineTo(x, H); g.stroke();
+  }
+  g.lineWidth = 1;
+  // 声の軌跡
+  if (rec && $('showTrace').checked) {
+    const s16 = 60 / rec.bpm / 4;
+    g.strokeStyle = 'rgba(155,93,229,.55)'; g.lineWidth = 2;
+    g.beginPath();
+    let pen = false;
+    rec.frames.forEach(f => {
+      if (f.m == null) { pen = false; return; }
+      const x = xOf16(f.t / s16), y = yOf(f.m) + ROW / 2;
+      if (pen) g.lineTo(x, y); else g.moveTo(x, y);
+      pen = true;
+    });
+    g.stroke(); g.lineWidth = 1;
+  }
+  // 音符
+  phrase.notes.forEach(n => {
+    const x = xOf16(n.s) + 1, y = yOf(n.m) + 1, w = n.d / step() * cellW - 2, h = ROW - 2;
+    g.fillStyle = n === sel ? '#264653' : '#e76f51';
+    roundRect(x, y, w, h, 4); g.fill();
+    g.fillStyle = 'rgba(255,255,255,.6)';
+    g.fillRect(x + w - 5, y + 3, 2, h - 6);       // 右端（長さ変更のつまみ）
+    if (w > 26) { g.fillStyle = '#fff'; g.font = '10px system-ui'; g.fillText(DOREMI[pc(n.m)], x + 4, y + h / 2 + 1); }
+  });
+  // 弾いて入力のカーソル
+  if (mode === 'play') {
+    const x = xOf16(Math.min(cursor, total16()));
+    g.strokeStyle = '#2e9e5b'; g.lineWidth = 3;
+    g.beginPath(); g.moveTo(x, 0); g.lineTo(x, H); g.stroke(); g.lineWidth = 1;
+  }
+  // 再生位置
+  if (playhead != null) {
+    const x = xOf16(playhead);
+    g.strokeStyle = '#d64545'; g.lineWidth = 2;
+    g.beginPath(); g.moveTo(x, 0); g.lineTo(x, H); g.stroke(); g.lineWidth = 1;
+  }
+}
+function roundRect(x, y, w, h, r) {
+  g.beginPath();
+  g.moveTo(x + r, y); g.arcTo(x + w, y, x + w, y + h, r); g.arcTo(x + w, y + h, x, y + h, r);
+  g.arcTo(x, y + h, x, y, r); g.arcTo(x, y, x + w, y, r); g.closePath();
+}
+
+// --- 編集操作 ---
+let drag = null;
+function hit(e) {
+  const r = cv.getBoundingClientRect();
+  const x = e.clientX - r.left, y = e.clientY - r.top;
+  return { x, cell: Math.floor((x - GUTTER) / cellW), m: view.hi - Math.floor(y / ROW) };
+}
+const noteAt = (s16, m) => phrase.notes.find(n => n.m === m && s16 >= n.s && s16 < n.s + n.d);
+
+cv.addEventListener('pointerdown', e => {
+  if (recording) return;
+  const h = hit(e);
+  if (h.x < GUTTER) { blip(h.m); return; }   // 左の音名をタップで試聴
+  const s16 = h.cell * step();
+  if (s16 < 0 || s16 >= total16()) return;
+  pushUndo();
+  let n = noteAt(s16, h.m);
+  let modeD = 'move';
+  if (n) {
+    const right = xOf16(n.s + n.d);
+    if (right - h.x < Math.min(12, cellW / 2)) modeD = 'len';
+  } else {
+    n = { s: s16, d: step(), m: h.m };
+    phrase.notes.push(n);
+    modeD = 'len';
+  }
+  sel = n;
+  blip(n.m, 0.25);
+  drag = { n, mode: modeD, cell: h.cell, m: h.m, os: n.s, om: n.m, od: n.d, moved: false };
+  cv.setPointerCapture(e.pointerId);
+  updateAll();
+});
+cv.addEventListener('pointermove', e => {
+  if (!drag) return;
+  const h = hit(e);
+  const dc = h.cell - drag.cell, dm = h.m - drag.m;
+  const n = drag.n;
+  if (drag.mode === 'move') {
+    const ns = clamp(drag.os + dc * step(), 0, total16() - n.d);
+    const nm = clamp(drag.om + dm, 24, 108);
+    if (nm !== n.m) blip(nm, 0.2);
+    n.s = ns; n.m = nm;
+    if (nm > view.hi || nm < view.lo) { view.hi = Math.max(view.hi, nm + 1); view.lo = Math.min(view.lo, nm - 1); resize(); }
+  } else {
+    n.d = clamp(drag.od + dc * step(), step(), total16() - n.s);
+  }
+  drag.moved = true;
+  draw();
+});
+cv.addEventListener('pointerup', () => {
+  if (!drag) return;
+  resolveOverlap(drag.n);
+  drag = null;
+  if (mode === 'play' && sel) cursor = sel.s + sel.d;
+  updateAll();
+});
+
+// 単旋律なので、重なった音は後から動かした音を優先して詰める
+function resolveOverlap(n) {
+  phrase.notes = phrase.notes.filter(o => {
+    if (o === n) return true;
+    const ne = n.s + n.d, oe = o.s + o.d;
+    if (oe <= n.s || o.s >= ne) return true;
+    if (o.s < n.s) { o.d = n.s - o.s; return o.d > 0; }
+    if (oe > ne) { o.d = oe - ne; o.s = ne; return true; }
+    return false;
+  });
+  phrase.notes.sort((a, b) => a.s - b.s);
+}
+
+// --- 元に戻す ---
+const undoStack = [];
+function pushUndo() {
+  undoStack.push(JSON.stringify(phrase.notes));
+  if (undoStack.length > 50) undoStack.shift();
+}
+function undo() {
+  if (!undoStack.length) return;
+  phrase.notes = JSON.parse(undoStack.pop());
+  sel = null;
+  updateAll();
+}
+
+// ===================== 弾いて入力 =====================
+function buildPiano() {
+  const p = $('piano');
+  p.innerHTML = '';
+  const lo = baseOct, hi = baseOct + 24;
+  let whites = 0;
+  for (let m = lo; m <= hi; m++) if (!BLACK.includes(pc(m))) whites++;
+  const w = 100 / whites;
+  let wi = 0;
+  for (let m = lo; m <= hi; m++) {
+    const k = document.createElement('div');
+    k.dataset.m = m;
+    if (BLACK.includes(pc(m))) {
+      k.className = 'b';
+      k.style.left = (wi * w - w * 0.3) + '%'; k.style.width = (w * 0.6) + '%';
+    } else {
+      k.className = 'w';
+      k.style.left = (wi * w) + '%'; k.style.width = w + '%';
+      k.textContent = pc(m) === 0 ? noteName(m) : DOREMI[pc(m)];
+      wi++;
+    }
+    k.addEventListener('pointerdown', e => { e.preventDefault(); stepInput(m); flash(k); });
+    p.appendChild(k);
+  }
+}
+function flash(k) { k.classList.add('down'); setTimeout(() => k.classList.remove('down'), 150); }
+
+function stepInput(m) {
+  blip(m, 0.3);
+  if (cursor >= total16()) { $('rollStatus').textContent = '最後まで入力しました。「カーソルを先頭へ」で最初から入れ直せます。'; return; }
+  pushUndo();
+  const d = Math.min(Number($('stepLen').value), total16() - cursor);
+  const n = { s: cursor, d, m };
+  phrase.notes.push(n);
+  resolveOverlap(n);
+  cursor += d;
+  sel = n;
+  if (m > view.hi - 1 || m < view.lo + 1) fitView(phrase.notes);
+  updateAll();
+}
+function stepRest() {
+  cursor = Math.min(total16(), cursor + Number($('stepLen').value));
+  draw();
+}
+function stepBack() {
+  const before = phrase.notes.filter(n => n.s < cursor).sort((a, b) => b.s - a.s)[0];
+  if (!before) { cursor = 0; draw(); return; }
+  pushUndo();
+  phrase.notes = phrase.notes.filter(n => n !== before);
+  cursor = before.s;
+  sel = null;
+  updateAll();
+}
+const PC_KEYS = { a: 0, w: 1, s: 2, e: 3, d: 4, f: 5, t: 6, g: 7, y: 8, h: 9, u: 10, j: 11, k: 12 };
+
+// ===================== 再生 =====================
+let playing = false, rafId = null;
+async function startPlay() {
+  await Tone.start();
+  stopPlay();
+  const T = Tone.Transport;
+  T.cancel();
+  const s16 = 60 / bpm() / 4;
+  const len = total16() * s16;
+  phrase.notes.forEach(n => T.schedule(t => inst().triggerAttackRelease(noteName(n.m), n.d * s16 * 0.92, t, 0.75), n.s * s16));
+  if ($('playClick').checked) for (let b = 0; b < bars() * 4; b++) T.schedule(t => clickSyn.triggerAttackRelease('32n', t, b % 4 === 0 ? 0.9 : 0.4), b * 4 * s16);
+  T.loop = $('loop').checked;
+  T.loopStart = 0; T.loopEnd = len;
+  if (!T.loop) T.schedule(t => Tone.Draw.schedule(stopPlay, t), len);
+  T.start('+0.05', 0);
+  playing = true;
+  $('playBtn').textContent = '■ 停止';
+  const tick = () => {
+    if (!playing) return;
+    playhead = (T.seconds % len) / s16;
+    draw();
+    rafId = requestAnimationFrame(tick);
+  };
+  tick();
+}
+function stopPlay() {
+  Tone.Transport.stop();
+  Tone.Transport.cancel();
+  playing = false;
+  if (rafId) cancelAnimationFrame(rafId);
+  playhead = null;
+  $('playBtn').textContent = '▶ 再生';
+  draw();
+}
+
+// ===================== 画面の更新 =====================
+function updateAll() {
+  const k = curKey();
+  const n = phrase.notes.length;
+  const keyTxt = k == null ? '' : `　調：${NOTE[k]}（${NOTE[(k + 9) % 12]}m）${keySel() == null ? '［自動］' : ''}`;
+  $('rollStatus').textContent = `${n}音${keyTxt}` + (n ? '　音名をタップで試聴できます' : '　まずは歌うか弾いてみてください');
+  $('delBtn').disabled = !sel;
+  $('undoBtn').disabled = !undoStack.length;
+  draw();
+  autoSave();
+}
+
+// ===================== 保存 =====================
+const LS_CUR = 'phraseMaker.current', LS_LIST = 'phraseMaker.phrases';
+function lsGet(k) { try { return JSON.parse(localStorage.getItem(k)); } catch { return null; } }
+function lsSet(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); return true; } catch { return false; } }
+
+// STEP 2 で読み込む形式（位置と長さは16分音符単位）
+function serialize() {
+  return {
+    type: 'phrase', v: 1,
+    bpm: bpm(), bars: bars(), grid: step(),
+    key: curKey(), keyMode: $('key').value,
+    notes: phrase.notes.map(({ s, d, m }) => ({ s, d, m })),
+  };
+}
+function applyData(o) {
+  if (!o || o.type !== 'phrase' || !Array.isArray(o.notes)) throw new Error('フレーズのファイルではありません');
+  stopPlay();
+  $('bpm').value = o.bpm || 90; $('bpmVal').textContent = $('bpm').value;
+  $('bars').value = String(o.bars || 2);
+  $('grid').value = String(o.grid || 2);
+  $('key').value = o.keyMode || 'auto';
+  phrase = { notes: o.notes.map(({ s, d, m }) => ({ s, d, m })), key: o.key ?? null };
+  if (phrase.key == null && phrase.notes.length) phrase.key = detectKey(phrase.notes);
+  rec = null; sel = null; cursor = 0;
+  $('reanalyze').disabled = true;
+  fitView(phrase.notes);
+  updateAll();
+}
+function autoSave() { lsSet(LS_CUR, serialize()); }
+function saveMsg(t) { $('saveStatus').textContent = t; }
+function renderSaved() {
+  const list = lsGet(LS_LIST) || {};
+  const names = Object.keys(list).sort((a, b) => list[b].savedAt - list[a].savedAt);
+  $('savedSel').innerHTML = names.length
+    ? names.map(n => `<option>${n.replace(/&/g, '&amp;').replace(/</g, '&lt;')}</option>`).join('')
+    : '<option value="">（保存したフレーズはありません）</option>';
+  $('loadBtn').disabled = $('delSaved').disabled = !names.length;
+}
+
+$('saveBtn').onclick = () => {
+  if (!phrase.notes.length) { saveMsg('音が入っていません'); return; }
+  const name = $('saveName').value.trim() || `フレーズ ${new Date().toLocaleString('ja-JP')}`;
+  const list = lsGet(LS_LIST) || {};
+  if (list[name] && !confirm(`「${name}」を上書きしますか？`)) return;
+  list[name] = { savedAt: Date.now(), data: serialize() };
+  saveMsg(lsSet(LS_LIST, list) ? `「${name}」を保存しました` : 'このブラウザでは保存できませんでした。「ファイルに書き出す」をお使いください');
+  renderSaved();
+  $('savedSel').value = name;
+};
+$('loadBtn').onclick = () => {
+  const name = $('savedSel').value;
+  const item = (lsGet(LS_LIST) || {})[name];
+  if (!item) return;
+  try { pushUndo(); applyData(item.data); $('saveName').value = name; saveMsg(`「${name}」を読み込みました`); }
+  catch (e) { saveMsg('読み込めませんでした：' + e.message); }
+};
+$('delSaved').onclick = () => {
+  const name = $('savedSel').value;
+  if (!name || !confirm(`「${name}」を削除しますか？`)) return;
+  const list = lsGet(LS_LIST) || {};
+  delete list[name];
+  lsSet(LS_LIST, list);
+  renderSaved();
+  saveMsg(`「${name}」を削除しました`);
+};
+$('exportBtn').onclick = () => {
+  const name = $('saveName').value.trim() || 'phrase';
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([JSON.stringify(serialize(), null, 1)], { type: 'application/json' }));
+  a.download = `${name}.json`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+};
+$('importBtn').onclick = () => $('importFile').click();
+$('importFile').onchange = e => {
+  const f = e.target.files[0];
+  if (!f) return;
+  const r = new FileReader();
+  r.onload = () => {
+    try { pushUndo(); applyData(JSON.parse(r.result)); $('saveName').value = f.name.replace(/\.json$/i, ''); saveMsg(`「${f.name}」を読み込みました`); }
+    catch (err) { saveMsg('読み込めませんでした：' + err.message); }
+  };
+  r.readAsText(f);
+  e.target.value = '';
+};
+
+// ===================== イベント =====================
+document.querySelectorAll('.tab').forEach(t => t.onclick = () => {
+  mode = t.dataset.mode;
+  document.querySelectorAll('.tab').forEach(x => x.classList.toggle('on', x === t));
+  $('singPane').hidden = mode !== 'sing';
+  $('playPane').hidden = mode !== 'play';
+  if (mode === 'play') {
+    const last = [...phrase.notes].sort((a, b) => (b.s + b.d) - (a.s + a.d))[0];
+    cursor = last ? last.s + last.d : 0;
+    if (cursor >= total16()) cursor = 0;
+  }
+  draw();
+});
+
+$('recBtn').onclick = () => { if (recording) finishRec(false); else startRec(); };
+$('playRaw').onclick = () => { if (rawUrl) new Audio(rawUrl).play(); };
+$('reanalyze').onclick = () => { pushUndo(); analyze(); singMsg('今の設定（細かさ・調）で解析し直しました'); };
+
+$('bpm').oninput = e => { $('bpmVal').textContent = e.target.value; };
+$('bpm').onchange = autoSave;
+$('bars').onchange = () => {
+  phrase.notes = phrase.notes.filter(n => n.s < total16());
+  phrase.notes.forEach(n => { n.d = Math.min(n.d, total16() - n.s); });
+  cursor = Math.min(cursor, total16());
+  resize(); updateAll();
+};
+$('grid').onchange = () => { resize(); updateAll(); };
+$('key').onchange = () => {
+  if ($('snap').checked && keySel() != null && phrase.notes.length) {
+    pushUndo();
+    phrase.notes.forEach(n => { n.m = snapToKey(n.m, n.m, keySel()); });
+  }
+  updateAll();
+};
+$('snap').onchange = () => updateAll();
+
+$('playBtn').onclick = () => (playing ? stopPlay() : startPlay());
+$('undoBtn').onclick = undo;
+$('delBtn').onclick = () => {
+  if (!sel) return;
+  pushUndo();
+  phrase.notes = phrase.notes.filter(n => n !== sel);
+  sel = null;
+  updateAll();
+};
+$('shiftUp').onclick = () => { pushUndo(); phrase.notes.forEach(n => n.m++); updateAll(); };
+$('shiftDown').onclick = () => { pushUndo(); phrase.notes.forEach(n => n.m--); updateAll(); };
+$('viewUp').onclick = () => { view.lo += 3; view.hi += 3; resize(); };
+$('viewDown').onclick = () => { view.lo -= 3; view.hi -= 3; resize(); };
+$('showTrace').onchange = () => draw();
+$('clearBtn').onclick = () => {
+  if (!phrase.notes.length || !confirm('フレーズを全部消しますか？')) return;
+  pushUndo();
+  phrase.notes = []; sel = null; cursor = 0;
+  updateAll();
+};
+
+$('restBtn').onclick = stepRest;
+$('backBtn').onclick = stepBack;
+$('cursorHome').onclick = () => { cursor = 0; draw(); };
+$('octUp').onclick = () => { baseOct = Math.min(84, baseOct + 12); buildPiano(); };
+$('octDown').onclick = () => { baseOct = Math.max(36, baseOct - 12); buildPiano(); };
+
+window.addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT' || e.repeat) return;
+  if ((e.ctrlKey || e.metaKey) && e.key === 'z') { e.preventDefault(); undo(); return; }
+  if (e.code === 'Space') { e.preventDefault(); playing ? stopPlay() : startPlay(); return; }
+  if (mode === 'play') {
+    const k = e.key.toLowerCase();
+    if (k in PC_KEYS) { stepInput(baseOct + PC_KEYS[k]); return; }
+    if (k === '-') { stepRest(); return; }
+    if (k === 'backspace') { e.preventDefault(); stepBack(); return; }
+  }
+  if ((e.key === 'Delete' || e.key === 'Backspace') && sel) { e.preventDefault(); $('delBtn').onclick(); }
+});
+window.addEventListener('resize', () => resize());
+
+// ===================== 起動 =====================
+buildPiano();
+const last = lsGet(LS_CUR);
+if (last) { try { applyData(last); } catch { fitView([]); updateAll(); } }
+else { fitView([]); updateAll(); }
+renderSaved();
+</script>
+</body>
+</html>
