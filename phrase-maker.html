@@ -71,7 +71,9 @@
     <div class="row">
       <label>テンポ <input type="range" id="bpm" min="50" max="160" value="90"> <b id="bpmVal">90</b></label>
       <label>長さ
-        <select id="bars"><option value="1">1小節</option><option value="2" selected>2小節</option><option value="4">4小節</option></select>
+        <button class="btn" id="barsDown" style="padding:4px 10px">−</button>
+        <input type="number" id="bars" min="1" max="32" value="4" style="width:3.6em;font-size:15px;padding:5px;border:1px solid var(--line);border-radius:8px;text-align:center">小節
+        <button class="btn" id="barsUp" style="padding:4px 10px">＋</button>
       </label>
       <label>細かさ
         <select id="grid"><option value="2" selected>8分音符</option><option value="1">16分音符</option></select>
@@ -99,12 +101,19 @@
         </div>
       </div>
       <div class="row" style="margin-top:12px">
+        <label>録音する位置
+          <select id="recFrom">
+            <option value="start">先頭から</option>
+            <option value="cont">続きから（最後の音の次の小節）</option>
+          </select>
+        </label>
         <label><input type="checkbox" id="click" checked> メトロノーム音</label>
         <button class="btn" id="playRaw" disabled>🔊 録音した声を聞く</button>
         <button class="btn" id="reanalyze" disabled>↻ 録音から解析し直す</button>
       </div>
       <div class="status" id="singStatus">
-        録音を押すと、1小節（4拍）のカウントのあとに録音が始まります。<br>
+        録音を押すと、1小節（4拍）のカウントのあとに録音が始まり、フレーズの最後まで録れます。歌い終わったら「停止」を押せば、そこまでが取り込まれます。<br>
+        長いフレーズは「続きから」で少しずつ録り足していけます（録り直した範囲の音だけが置き換わります）。<br>
         コツ：「ラ・ラ・ラ」「タ・タ・タ」と区切って歌うと精度が上がります。イヤホンを使うとメトロノームの音を拾いません。
       </div>
     </div>
@@ -185,7 +194,7 @@ const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
 
 // フレーズ：音の位置と長さは16分音符単位（s=開始, d=長さ, m=MIDI番号）
 let phrase = { notes: [], key: null };
-let rec = null;      // 最後の録音 { bpm, bars, frames:[{t, m, rms}] }
+let rec = null;      // 最後の録音 { bpm, off16:録音を始めた位置, len16:録音した長さ, frames:[{t, m, rms}] }
 let sel = null;      // 選択中の音
 let mode = 'sing';
 let cursor = 0;      // 弾いて入力のカーソル（16分単位）
@@ -193,7 +202,8 @@ let baseOct = 60;    // 弾いて入力の基準のド
 let view = { lo: 55, hi: 79 };
 
 const bpm = () => Number($('bpm').value);
-const bars = () => Number($('bars').value);
+const MAX_BARS = 32;
+const bars = () => clamp(Math.round(Number($('bars').value) || 4), 1, MAX_BARS);
 const step = () => Number($('grid').value);   // 1マスの長さ（16分単位）
 const total16 = () => bars() * 16;
 const keySel = () => $('key').value === 'auto' ? null : Number($('key').value);
@@ -289,7 +299,14 @@ async function startRec() {
   }
   const buf = new Float32Array(analyser.fftSize);
   const beat = 60 / bpm();
-  const nBars = bars();
+  // 録音を始める小節：先頭から、または最後の音の次の小節から
+  let startBar = 0;
+  if ($('recFrom').value === 'cont' && phrase.notes.length) {
+    startBar = Math.ceil(Math.max(...phrase.notes.map(n => n.s + n.d)) / 16);
+  }
+  if (startBar >= bars()) setBars(Math.min(MAX_BARS, startBar + 4));   // 足りなければ4小節のばす
+  if (startBar >= bars()) { singMsg(`これ以上のばせません（最大${MAX_BARS}小節）`); return; }
+  const nBars = bars() - startBar;
   const t0 = ctx.currentTime + 0.2;
   const recStart = t0 + 4 * beat;               // 1小節カウントしてから
   const recEnd = recStart + nBars * 4 * beat;
@@ -302,7 +319,7 @@ async function startRec() {
     if ($('click').checked) recClick.triggerAttackRelease('32n', t, i % 4 === 0 ? 1 : 0.5);
     const counting = i < 4;
     const barNo = Math.floor((i - 4) / 4) + 1;
-    Tone.Draw.schedule(() => showBeat(i % 4, counting ? `カウント ${i + 1}` : `歌って！ ${barNo}小節目`), t);
+    Tone.Draw.schedule(() => showBeat(i % 4, counting ? `カウント ${i + 1}` : `歌って！ ${startBar + barNo}小節目`), t);
   }
 
   // 声の録音（あとで聞き直せるように）
@@ -318,8 +335,9 @@ async function startRec() {
   recording = true;
   $('recBtn').textContent = '■ 停止'; $('recBtn').classList.add('on');
   singMsg('録音中…');
-  rec = { bpm: bpm(), bars: nBars, frames };
-  fitView([]);
+  rec = { bpm: bpm(), off16: startBar * 16, len16: nBars * 16, frames };
+  if (!phrase.notes.length) fitView([]);
+  scrollTo16(startBar * 16);
 
   recTimer = setInterval(() => {
     analyser.getFloatTimeDomainData(buf);
@@ -337,7 +355,11 @@ async function startRec() {
       if (r && r.conf > 0.8) m = freqToMidi(r.freq);
     }
     showLive(m);
-    if (tc >= recStart && tc < recEnd) { frames.push({ t: tc - recStart, m, rms }); draw(); }
+    if (tc >= recStart && tc < recEnd) {
+      frames.push({ t: tc - recStart, m, rms });
+      draw();
+      followScroll(rec.off16 + (tc - recStart) / (beat / 4));
+    }
     if (tc >= recEnd) finishRec(true);
   }, 12);
 }
@@ -353,15 +375,23 @@ function finishRec(complete) {
   showLive(null);
   $('meter').style.width = '0';
   $('recBtn').textContent = '● 録音'; $('recBtn').classList.remove('on');
-  if (!complete || !rec || rec.frames.filter(f => f.m != null).length < 3) {
-    singMsg(complete ? '声がほとんど拾えませんでした。マイクに近づくか、少し大きめの声で歌ってみてください。' : '録音を中止しました。');
+  if (!rec || rec.frames.filter(f => f.m != null).length < 3) {
+    singMsg(complete ? '声がほとんど拾えませんでした。マイクに近づくか、少し大きめの声で歌ってみてください。' : '録音を止めました（声はほとんど入っていませんでした）。');
     draw();
     return;
   }
+  // 途中で止めたときは、止めた位置まで（マスの区切りに切り上げ）を取り込む
+  if (!complete) {
+    const s16 = 60 / rec.bpm / 4;
+    const lastT = rec.frames.length ? rec.frames[rec.frames.length - 1].t : 0;
+    rec.len16 = Math.min(rec.len16, Math.ceil(lastT / s16 / step()) * step());
+  }
   $('reanalyze').disabled = false;
   pushUndo();
-  analyze();
-  singMsg(`${phrase.notes.length}個の音を取り込みました。違う音は下の画面でドラッグして直せます。`);
+  const before = phrase.notes.length;
+  const got = analyze();
+  const startBar = rec.off16 / 16 + 1, endBar = (rec.off16 + rec.len16) / 16;
+  singMsg(`${Math.floor(startBar)}〜${Math.ceil(endBar)}小節目に${got}個の音を取り込みました（全体で${phrase.notes.length}音）。違う音は下の画面でドラッグして直せます。`);
 }
 
 function showBeat(i, text) {
@@ -390,7 +420,8 @@ function analyze() {
   if (!rec) return;
   const st = step();
   const cellDur = 60 / rec.bpm / 4 * st;          // 1マスの秒数
-  const nCells = rec.bars * 16 / st;
+  const nCells = Math.ceil((rec.len16 ?? rec.bars * 16) / st);
+  const off = rec.off16 || 0;
   const fr = rec.frames;
   const ms = smooth(fr);
 
@@ -422,17 +453,53 @@ function analyze() {
   cells.forEach((c, i) => {
     if (!c) { cur = null; return; }
     if (cur && Math.abs(c.p - median(cur.ps)) < 0.7 && !c.dip) { cur.d += st; cur.ps.push(c.p); return; }
-    cur = { s: i * st, d: st, ps: [c.p] };
+    cur = { s: off + i * st, d: st, ps: [c.p] };
     notes.push(cur);
   });
   notes.forEach(n => { n.raw = median(n.ps); n.m = Math.round(n.raw); });
 
-  phrase.key = detectKey(notes);
+  // 録音した範囲の外の音はそのまま残し、範囲内だけ置き換える
+  const end = off + nCells * st;
+  const kept = [];
+  phrase.notes.forEach(n => {
+    const ne = n.s + n.d;
+    if (ne <= off || n.s >= end) kept.push(n);
+    else if (n.s < off) kept.push({ ...n, d: off - n.s });   // 範囲の手前からはみ出している音は切る
+  });
+  notes.forEach(n => { n.d = Math.min(n.d, end - n.s); });
+
+  phrase.key = detectKey([...kept, ...notes]);
   if ($('snap').checked) notes.forEach(n => { n.m = snapToKey(n.m, n.raw, curKey()); });
-  phrase.notes = notes.map(({ s, d, m }) => ({ s, d, m }));
+  phrase.notes = [...kept, ...notes.map(({ s, d, m }) => ({ s, d, m }))].sort((a, b) => a.s - b.s);
   sel = null;
   fitView(phrase.notes);
   updateAll();
+  return notes.length;
+}
+
+// 長さ（小節数）を変える。短くするときに消える音があれば確認する
+function setBars(n, ask = false) {
+  n = clamp(Math.round(n) || 1, 1, MAX_BARS);
+  const lost = phrase.notes.filter(x => x.s >= n * 16).length;
+  if (ask && lost && !confirm(`${n}小節にすると、後ろの${lost}個の音が消えます。よろしいですか？`)) { $('bars').value = bars(); return false; }
+  if (lost) pushUndo();
+  $('bars').value = n;
+  phrase.notes = phrase.notes.filter(x => x.s < n * 16);
+  phrase.notes.forEach(x => { x.d = Math.min(x.d, n * 16 - x.s); });
+  cursor = Math.min(cursor, n * 16);
+  resize();
+  updateAll();
+  return true;
+}
+
+// 長いフレーズで、指定の位置が見えるように横スクロールする
+function scrollTo16(s16) {
+  const w = $('rollWrap');
+  w.scrollLeft = Math.max(0, xOf16(s16) - GUTTER - 20);
+}
+function followScroll(s16) {
+  const w = $('rollWrap'), x = xOf16(s16);
+  if (x < w.scrollLeft + GUTTER || x > w.scrollLeft + w.clientWidth - 40) w.scrollLeft = Math.max(0, x - GUTTER - 20);
 }
 
 // 音の長さを重みにして、一番よく当てはまる長調（＝平行短調）を選ぶ
@@ -515,6 +582,11 @@ function draw() {
     g.strokeStyle = s % 16 === 0 ? '#666' : s % 4 === 0 ? '#bbb' : '#e6e6e6';
     g.lineWidth = s % 16 === 0 ? 2 : 1;
     g.beginPath(); g.moveTo(x, 0); g.lineTo(x, H); g.stroke();
+    if (s % 16 === 0 && s < total16()) {   // 小節番号
+      g.fillStyle = '#888'; g.font = 'bold 10px system-ui'; g.textBaseline = 'top';
+      g.fillText(String(s / 16 + 1), x + 4, 2);
+      g.textBaseline = 'middle';
+    }
   }
   g.lineWidth = 1;
   // 声の軌跡
@@ -525,7 +597,7 @@ function draw() {
     let pen = false;
     rec.frames.forEach(f => {
       if (f.m == null) { pen = false; return; }
-      const x = xOf16(f.t / s16), y = yOf(f.m) + ROW / 2;
+      const x = xOf16((rec.off16 || 0) + f.t / s16), y = yOf(f.m) + ROW / 2;
       if (pen) g.lineTo(x, y); else g.moveTo(x, y);
       pen = true;
     });
@@ -671,7 +743,10 @@ function flash(k) { k.classList.add('down'); setTimeout(() => k.classList.remove
 
 function stepInput(m) {
   blip(m, 0.3);
-  if (cursor >= total16()) { $('rollStatus').textContent = '最後まで入力しました。「カーソルを先頭へ」で最初から入れ直せます。'; return; }
+  if (cursor >= total16()) {   // 最後まで来たら1小節のばす
+    if (bars() >= MAX_BARS) { $('rollStatus').textContent = `最大の${MAX_BARS}小節まで入力しました。`; return; }
+    setBars(bars() + 1);
+  }
   pushUndo();
   const d = Math.min(Number($('stepLen').value), total16() - cursor);
   const n = { s: cursor, d, m };
@@ -679,6 +754,7 @@ function stepInput(m) {
   resolveOverlap(n);
   cursor += d;
   sel = n;
+  followScroll(cursor);
   if (m > view.hi - 1 || m < view.lo + 1) fitView(phrase.notes);
   updateAll();
 }
@@ -718,6 +794,7 @@ async function startPlay() {
     if (!playing) return;
     playhead = (T.seconds % len) / s16;
     draw();
+    followScroll(playhead);
     rafId = requestAnimationFrame(tick);
   };
   tick();
@@ -762,7 +839,7 @@ function applyData(o) {
   if (!o || o.type !== 'phrase' || !Array.isArray(o.notes)) throw new Error('フレーズのファイルではありません');
   stopPlay();
   $('bpm').value = o.bpm || 90; $('bpmVal').textContent = $('bpm').value;
-  $('bars').value = String(o.bars || 2);
+  $('bars').value = clamp(Number(o.bars) || 2, 1, MAX_BARS);
   $('grid').value = String(o.grid || 2);
   $('key').value = o.keyMode || 'auto';
   phrase = { notes: o.notes.map(({ s, d, m }) => ({ s, d, m })), key: o.key ?? null };
@@ -850,12 +927,9 @@ $('reanalyze').onclick = () => { pushUndo(); analyze(); singMsg('今の設定（
 
 $('bpm').oninput = e => { $('bpmVal').textContent = e.target.value; };
 $('bpm').onchange = autoSave;
-$('bars').onchange = () => {
-  phrase.notes = phrase.notes.filter(n => n.s < total16());
-  phrase.notes.forEach(n => { n.d = Math.min(n.d, total16() - n.s); });
-  cursor = Math.min(cursor, total16());
-  resize(); updateAll();
-};
+$('bars').onchange = () => setBars(Number($('bars').value), true);
+$('barsUp').onclick = () => setBars(bars() + 1);
+$('barsDown').onclick = () => setBars(bars() - 1, true);
 $('grid').onchange = () => { resize(); updateAll(); };
 $('key').onchange = () => {
   if ($('snap').checked && keySel() != null && phrase.notes.length) {
